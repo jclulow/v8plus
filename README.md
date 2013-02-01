@@ -624,7 +624,7 @@ worker threads in the pool for as long as `async_worker` is running.
 
 The other asynchronous mechanism is the Node.js `EventEmitter` model.  This
 model requires some assistance from JavaScript code, because v8+ native
-objects no not inherit from `EventEmitter`.  To make this work, you will
+objects do not inherit from `EventEmitter`.  To make this work, you will
 need to create a JavaScript object (the object your consumers actually use)
 that inherits from `EventEmitter`, hang your native object off this object,
 and populate the native object with an appropriate method that will cause

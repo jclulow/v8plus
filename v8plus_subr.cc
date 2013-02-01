@@ -485,6 +485,72 @@ v8plus_method_call(void *cop, const char *name, const nvlist_t *lp)
 	return (rp);
 }
 
+typedef struct v8plus_method_crosscall {
+	void *ccm_cop;
+	const char *ccm_name;
+	const nvlist_t *ccm_lp;
+
+	pthread_cond_t ccm_cv;
+	pthread_mutex_t ccm_mtx;
+
+	boolean_t ccm_run;
+	nvlist_t *ccm_return;
+} v8plus_method_crosscall_t;
+
+static void
+v8plus_ccm_callback(uv_async_t *async, int status)
+{
+	v8plus_method_crosscall_t *args = async->data;
+
+	async->data = NULL;
+	if (args == NULL) {
+		/*
+		 * We have already been called once, so abort.
+		 */
+		return;
+	}
+
+	args->ccm_return = v8plus_method_call(args->ccm_cop, args->ccm_name,
+	    args->ccm_lp);
+
+	if (pthread_mutex_lock(&args->ccm_mtx) != 0)
+		v8plus_panic("could not lock crosscall mutex");
+	args->ccm_run = _B_TRUE;
+	if (pthread_cond_broadcast(&args->ccm_cv) != 0)
+		v8plus_panic("could not broadcast crosscall condvar");
+	if (pthread_mutex_unlock(&args->ccm_mtx) != 0)
+		v8plus_panic("could not unlock crosscall mutex");
+}
+
+extern "C" nvlist_t *
+v8plus_method_crosscall(void *cop, const char *name, const nvlist_t *lp)
+{
+	uv_async_t async;
+	v8plus_method_crosscall_t args;
+
+	uv_async_init(uv_default_loop(), &async, v8plus_ccm_callback);
+	async.data = &args;
+
+	args.ccm_cop = cop;
+	args.ccm_name = name;
+	args.ccm_lp = lp;
+	args.ccm_cv = PTHREAD_COND_INITIALIZER;
+	args.ccm_mtx = PTHREAD_MUTEX_INITIALIZER;
+	args.ccm_run = _B_FALSE;
+	args.ccm_return = NULL;
+
+	uv_async_send(uv_async_t* async);
+
+	if (pthread_mutex_lock(&args.ccm_mtx) != 0)
+		v8plus_panic("could not lock crosscall mutex");
+	while (args.ccm_run == _B_FALSE) {
+		if (pthread_cond_wait(&args.ccm_cv, &args.ccm_mtx) != 0)
+			v8plus_panic("could not wait on crosscall condvar");
+	}
+
+	return (args.ccm_return);
+}
+
 extern "C" int
 nvlist_lookup_v8plus_jsfunc(const nvlist_t *lp, const char *name,
     v8plus_jsfunc_t *vp)
