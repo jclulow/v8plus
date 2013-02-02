@@ -9,6 +9,8 @@
 #include <stdarg.h>
 #include <libnvpair.h>
 #include <v8.h>
+#include <uv.h>
+#include <queue>
 #include <unordered_map>
 #include "v8plus_glue.h"
 
@@ -29,7 +31,22 @@
 #define	NODE_MAKECALLBACK_RETURN
 #endif
 
+typedef struct v8plus_async_call {
+	void *ac_cop;
+	const char *ac_name;
+	const nvlist_t *ac_lp;
+
+	pthread_cond_t ac_cv;
+	pthread_mutex_t ac_mtx;
+
+	boolean_t ac_run;
+	nvlist_t *ac_return;
+} v8plus_async_call_t;
+
+extern "C" void v8plus_async_callback(uv_async_t *, int);
+
 namespace v8plus {
+
 
 class ObjectWrap;
 
@@ -41,6 +58,8 @@ public:
 	v8::Handle<v8::Value> call(const char *, int, v8::Handle<v8::Value>[]);
 	void public_Ref(void);
 	void public_Unref(void);
+	v8plus_async_call_t *next_async_call(void);
+	void post_async_call(v8plus_async_call_t *);
 
 private:
 	static v8::Persistent<v8::Function> _constructor;
@@ -48,6 +67,10 @@ private:
 	static v8plus_static_descr_t *_stbl;
 	static std::unordered_map<void *, ObjectWrap *> _objhash;
 	void *_c_impl;
+
+	uv_async_t _uv_async;
+	pthread_mutex_t _callq_mutex;
+	std::queue<v8plus_async_call_t *> _callq;
 
 	ObjectWrap() : _c_impl(NULL) {};
 	~ObjectWrap();

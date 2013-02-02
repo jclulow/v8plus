@@ -113,6 +113,13 @@ v8plus::ObjectWrap::_new(const v8::Arguments &args)
 	if ((c_args = v8plus::v8_Arguments_to_nvlist(args)) == NULL)
 		return (V8PLUS_THROW_DEFAULT());
 
+	/*
+	 * XXX Initialise cross-thread calling.
+	 */
+	uv_async_init(uv_default_loop(), &op->_uv_async, v8plus_async_callback);
+	pthread_mutex_init(&op->_callq_mutex, NULL);
+	op->_uv_async.data = op;
+
 	c_excp = v8plus_ctor(c_args, &op->_c_impl);
 	nvlist_free(c_args);
 	if (op->_c_impl == NULL) {
@@ -310,6 +317,39 @@ void
 v8plus::ObjectWrap::public_Unref(void)
 {
 	this->Unref();
+}
+
+v8plus_async_call_t *
+v8plus::ObjectWrap::next_async_call(void)
+{
+	v8plus_async_call_t *ret = NULL;
+
+	if (pthread_mutex_lock(&this->_callq_mutex) != 0)
+		v8plus_panic("could not lock callq mutex");
+
+	if (!this->_callq.empty()) {
+		ret = this->_callq.front();
+		this->_callq.pop();
+	}
+
+	if (pthread_mutex_unlock(&this->_callq_mutex) != 0)
+		v8plus_panic("could not release callq mutex");
+
+	return (ret);
+}
+
+void
+v8plus::ObjectWrap::post_async_call(v8plus_async_call_t *ac)
+{
+	if (pthread_mutex_lock(&this->_callq_mutex) != 0)
+		v8plus_panic("could not lock callq mutex");
+
+	this->_callq.push(ac);
+
+	if (pthread_mutex_unlock(&this->_callq_mutex) != 0)
+		v8plus_panic("could not release callq mutex");
+
+	uv_async_send(&this->_uv_async);
 }
 
 extern "C" void
