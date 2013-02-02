@@ -220,7 +220,7 @@ the JavaScript object, and `ap` is the encoded list of arguments to the
 function.  Return an encoded object with a `res` member, or use one of the
 error/exception patterns.
 
-### nvlist_t *v8plus_c_static_method_f(nvlist_t *ap)
+### nvlist_t *v8plus_c_static_method_f(const nvlist_t *ap)
 
 In addition to methods on the native objects returned by your constructor,
 you can also provide a set of functions on the native binding object itself.
