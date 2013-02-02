@@ -463,6 +463,9 @@ v8plus_method_call_direct(void *cop, const char *name, const nvlist_t *lp)
 	v8::Handle<v8::Value> res;
 	nvlist_t *rp;
 
+	if (v8plus::ObjectWrap::in_event_thread() != _B_TRUE)
+		v8plus_panic("direct method call outside of event loop");
+
 	argc = max_argc;
 	nvlist_to_v8_argv(lp, &argc, argv);
 
@@ -498,16 +501,20 @@ v8plus_async_callback(uv_async_t *async, __attribute__((unused)) int status)
 		if ((ac = v8plus::ObjectWrap::next_async_call()) == NULL)
 			break;
 
-		pthread_mutex_lock(&ac->ac_mtx);
-		if (ac->ac_run == _B_TRUE)
-			v8plus_panic("crosscall already run");
+		if (pthread_mutex_lock(&ac->ac_mtx) != 0)
+			v8plus_panic("could not lock async call mutex");
 
-		ac->ac_return = v8plus_method_call(ac->ac_cop,
+		if (ac->ac_run == _B_TRUE)
+			v8plus_panic("async call already run");
+
+		ac->ac_return = v8plus_method_call_direct(ac->ac_cop,
 		    ac->ac_name, ac->ac_lp);
 		ac->ac_run = _B_TRUE;
 
-		pthread_cond_broadcast(&ac->ac_cv);
-		pthread_mutex_unlock(&ac->ac_mtx);
+		if (pthread_cond_broadcast(&ac->ac_cv) != 0)
+			v8plus_panic("could not signal async call condvar");
+		if (pthread_mutex_unlock(&ac->ac_mtx) != 0)
+			v8plus_panic("could not unlock async call mutex");
 	}
 }
 
@@ -526,31 +533,28 @@ v8plus_method_call(void *cop, const char *name, const nvlist_t *lp)
 
 	/*
 	 * As we cannot manipulate v8plus/V8/Node structures directly from
-	 * outside the event loop thread, push the call arguments onto a
-	 * queue and post to the event loop thread.  We'll then sleep on
-	 * a condition variable until the event loop thread makes the call
+	 * outside the event loop thread, we push the call arguments onto a
+	 * queue and post to the event loop thread.  We then sleep on our
+	 * condition variable until the event loop thread makes the call
 	 * for us and wakes us up.
 	 */
-
 	ac.ac_cop = cop;
 	ac.ac_name = name;
 	ac.ac_lp = lp;
-
 	if (pthread_mutex_init(&ac.ac_mtx, NULL) != 0)
 		v8plus_panic("could not init async call mutex");
 	if (pthread_cond_init(&ac.ac_cv, NULL) != 0)
 		v8plus_panic("could not init async call condvar");
-
 	ac.ac_run = _B_FALSE;
 	ac.ac_return = NULL;
 
 	v8plus::ObjectWrap::post_async_call(&ac);
 
 	if (pthread_mutex_lock(&ac.ac_mtx) != 0)
-		v8plus_panic("could not lock crosscall mutex");
+		v8plus_panic("could not lock async call mutex");
 	while (ac.ac_run == _B_FALSE) {
 		if (pthread_cond_wait(&ac.ac_cv, &ac.ac_mtx) != 0)
-			v8plus_panic("could not wait on crosscall condvar");
+			v8plus_panic("could not wait on async call condvar");
 	}
 
 	return (ac.ac_return);
