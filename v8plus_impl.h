@@ -58,8 +58,9 @@ public:
 	v8::Handle<v8::Value> call(const char *, int, v8::Handle<v8::Value>[]);
 	void public_Ref(void);
 	void public_Unref(void);
-	v8plus_async_call_t *next_async_call(void);
-	void post_async_call(v8plus_async_call_t *);
+	static v8plus_async_call_t *next_async_call(void);
+	static void post_async_call(v8plus_async_call_t *);
+	static boolean_t in_event_thread(void);
 
 private:
 	static v8::Persistent<v8::Function> _constructor;
@@ -68,9 +69,11 @@ private:
 	static std::unordered_map<void *, ObjectWrap *> _objhash;
 	void *_c_impl;
 
-	uv_async_t _uv_async;
-	pthread_mutex_t _callq_mutex;
-	std::queue<v8plus_async_call_t *> _callq;
+	static uv_async_t _uv_async;
+	static pthread_mutex_t _callq_mutex;
+	static std::queue<v8plus_async_call_t *> _callq;
+	static boolean_t _crossthread_init_done;
+	static unsigned long _uv_event_thread;
 
 	ObjectWrap() : _c_impl(NULL) {};
 	~ObjectWrap();

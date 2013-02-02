@@ -18,6 +18,12 @@ v8plus_method_descr_t *v8plus::ObjectWrap::_mtbl;
 v8plus_static_descr_t *v8plus::ObjectWrap::_stbl;
 std::unordered_map<void *, v8plus::ObjectWrap *> v8plus::ObjectWrap::_objhash;
 
+uv_async_t v8plus::ObjectWrap::_uv_async;
+pthread_mutex_t v8plus::ObjectWrap::_callq_mutex;
+std::queue<v8plus_async_call_t *> v8plus::ObjectWrap::_callq;
+boolean_t v8plus::ObjectWrap::_crossthread_init_done = _B_FALSE;
+unsigned long v8plus::ObjectWrap::_uv_event_thread;
+
 static char *
 function_name(const char *lambda)
 {
@@ -113,12 +119,23 @@ v8plus::ObjectWrap::_new(const v8::Arguments &args)
 	if ((c_args = v8plus::v8_Arguments_to_nvlist(args)) == NULL)
 		return (V8PLUS_THROW_DEFAULT());
 
-	/*
-	 * XXX Initialise cross-thread calling.
-	 */
-	uv_async_init(uv_default_loop(), &op->_uv_async, v8plus_async_callback);
-	pthread_mutex_init(&op->_callq_mutex, NULL);
-	op->_uv_async.data = op;
+	if (_crossthread_init_done == _B_FALSE) {
+		/*
+		 * Initialise structures for off-event-loop method calls.
+		 *
+		 * Note that uv_async_init() must be called inside the libuv
+		 * Event Loop, so we do it here.  We also want to record the
+		 * thread ID of the Event Loop thread so as to determine what
+		 * kind of method calls to make later.
+		 */
+		_uv_event_thread = pthread_self();
+		if (uv_async_init(uv_default_loop(), &_uv_async,
+		    v8plus_async_callback) != 0)
+			v8plus_panic("unable to initialise uv_async_t");
+		if (pthread_mutex_init(&_callq_mutex, NULL) != 0)
+			v8plus_panic("unable to initialise mutex");
+		_crossthread_init_done = _B_TRUE;
+	}
 
 	c_excp = v8plus_ctor(c_args, &op->_c_impl);
 	nvlist_free(c_args);
@@ -319,20 +336,29 @@ v8plus::ObjectWrap::public_Unref(void)
 	this->Unref();
 }
 
+boolean_t
+v8plus::ObjectWrap::in_event_thread(void)
+{
+	if (_crossthread_init_done != _B_TRUE)
+		v8plus_panic("cross thread call init not done!");
+
+	return (_uv_event_thread == pthread_self() ? _B_TRUE : _B_FALSE);
+}
+
 v8plus_async_call_t *
 v8plus::ObjectWrap::next_async_call(void)
 {
 	v8plus_async_call_t *ret = NULL;
 
-	if (pthread_mutex_lock(&this->_callq_mutex) != 0)
+	if (pthread_mutex_lock(&_callq_mutex) != 0)
 		v8plus_panic("could not lock callq mutex");
 
-	if (!this->_callq.empty()) {
-		ret = this->_callq.front();
-		this->_callq.pop();
+	if (!_callq.empty()) {
+		ret = _callq.front();
+		_callq.pop();
 	}
 
-	if (pthread_mutex_unlock(&this->_callq_mutex) != 0)
+	if (pthread_mutex_unlock(&_callq_mutex) != 0)
 		v8plus_panic("could not release callq mutex");
 
 	return (ret);
@@ -341,15 +367,15 @@ v8plus::ObjectWrap::next_async_call(void)
 void
 v8plus::ObjectWrap::post_async_call(v8plus_async_call_t *ac)
 {
-	if (pthread_mutex_lock(&this->_callq_mutex) != 0)
+	if (pthread_mutex_lock(&_callq_mutex) != 0)
 		v8plus_panic("could not lock callq mutex");
 
-	this->_callq.push(ac);
+	_callq.push(ac);
 
-	if (pthread_mutex_unlock(&this->_callq_mutex) != 0)
+	if (pthread_mutex_unlock(&_callq_mutex) != 0)
 		v8plus_panic("could not release callq mutex");
 
-	uv_async_send(&this->_uv_async);
+	uv_async_send(&_uv_async);
 }
 
 extern "C" void

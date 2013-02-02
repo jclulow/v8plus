@@ -454,7 +454,7 @@ v8plus_call(v8plus_jsfunc_t f, const nvlist_t *lp)
 }
 
 extern "C" nvlist_t *
-v8plus_method_call(void *cop, const char *name, const nvlist_t *lp)
+v8plus_method_call_direct(void *cop, const char *name, const nvlist_t *lp)
 {
 	v8plus::ObjectWrap *op = v8plus::ObjectWrap::objlookup(cop);
 	const int max_argc = nvlist_length(lp);
@@ -489,13 +489,13 @@ v8plus_method_call(void *cop, const char *name, const nvlist_t *lp)
 extern "C" void
 v8plus_async_callback(uv_async_t *async, __attribute__((unused)) int status)
 {
-	v8plus::ObjectWrap *ow =
-	    reinterpret_cast<v8plus::ObjectWrap *>(async->data);
+	if (v8plus::ObjectWrap::in_event_thread() != _B_TRUE)
+		v8plus_panic("async callback called outside of event loop");
 
 	for (;;) {
 		v8plus_async_call_t *ac;
-	       
-		if ((ac = ow->next_async_call()) == NULL)
+
+		if ((ac = v8plus::ObjectWrap::next_async_call()) == NULL)
 			break;
 
 		pthread_mutex_lock(&ac->ac_mtx);
@@ -512,15 +512,25 @@ v8plus_async_callback(uv_async_t *async, __attribute__((unused)) int status)
 }
 
 extern "C" nvlist_t *
-v8plus_method_crosscall(void *cop, const char *name, const nvlist_t *lp)
+v8plus_method_call(void *cop, const char *name, const nvlist_t *lp)
 {
-	v8plus::ObjectWrap *ow = v8plus::ObjectWrap::objlookup(cop);
 	v8plus_async_call_t ac;
-       
-#if 0
-	if ((ac = malloc(sizeof (v8plus_async_call_t))) == NULL)
-		v8plus_panic("v8plus_method_crosscall no memory");
-#endif
+
+	if (v8plus::ObjectWrap::in_event_thread() == _B_TRUE) {
+		/*
+		 * We're running in the event loop thread, so we can make the
+		 * call directly.
+		 */
+		return (v8plus_method_call_direct(cop, name, lp));
+	}
+
+	/*
+	 * As we cannot manipulate v8plus/V8/Node structures directly from
+	 * outside the event loop thread, push the call arguments onto a
+	 * queue and post to the event loop thread.  We'll then sleep on
+	 * a condition variable until the event loop thread makes the call
+	 * for us and wakes us up.
+	 */
 
 	ac.ac_cop = cop;
 	ac.ac_name = name;
@@ -534,7 +544,7 @@ v8plus_method_crosscall(void *cop, const char *name, const nvlist_t *lp)
 	ac.ac_run = _B_FALSE;
 	ac.ac_return = NULL;
 
-	ow->post_async_call(&ac);
+	v8plus::ObjectWrap::post_async_call(&ac);
 
 	if (pthread_mutex_lock(&ac.ac_mtx) != 0)
 		v8plus_panic("could not lock crosscall mutex");
