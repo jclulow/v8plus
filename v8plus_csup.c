@@ -45,8 +45,6 @@ typedef struct v8plus_async_call {
 	STAILQ_ENTRY(v8plus_async_call) vac_callq_entry;
 } v8plus_async_call_t;
 
-nvlist_t *v8plus_method_call_direct(void *, const char *, const nvlist_t *);
-
 boolean_t
 v8plus_in_event_thread(void)
 {
@@ -54,7 +52,7 @@ v8plus_in_event_thread(void)
 }
 
 static void
-v8plus_async_callback(uv_async_t *async, __attribute__((unused)) int status)
+v8plus_async_callback(uv_async_t *async, int status __UNUSED)
 {
 	if (v8plus_in_event_thread() != B_TRUE)
 		v8plus_panic("async callback called outside of event loop");
@@ -80,16 +78,14 @@ v8plus_async_callback(uv_async_t *async, __attribute__((unused)) int status)
 		/*
 		 * Run the queued method:
 		 */
-		if (pthread_mutex_lock(&vac->vac_mtx) != 0)
-			v8plus_panic("could not lock async call mutex");
-
 		if (vac->vac_run == B_TRUE)
 			v8plus_panic("async call already run");
-
 		vac->vac_return = v8plus_method_call_direct(vac->vac_cop,
 		    vac->vac_name, vac->vac_lp);
-		vac->vac_run = B_TRUE;
 
+		if (pthread_mutex_lock(&vac->vac_mtx) != 0)
+			v8plus_panic("could not lock async call mutex");
+		vac->vac_run = B_TRUE;
 		if (pthread_cond_broadcast(&vac->vac_cv) != 0)
 			v8plus_panic("could not signal async call condvar");
 		if (pthread_mutex_unlock(&vac->vac_mtx) != 0)
@@ -117,6 +113,7 @@ v8plus_method_call(void *cop, const char *name, const nvlist_t *lp)
 	 * condition variable until the event loop thread makes the call
 	 * for us and wakes us up.
 	 */
+	bzero(&vac, sizeof (vac));
 	vac.vac_cop = cop;
 	vac.vac_name = name;
 	vac.vac_lp = lp;
@@ -125,7 +122,6 @@ v8plus_method_call(void *cop, const char *name, const nvlist_t *lp)
 	if (pthread_cond_init(&vac.vac_cv, NULL) != 0)
 		v8plus_panic("could not init async call condvar");
 	vac.vac_run = B_FALSE;
-	vac.vac_return = NULL;
 
 	/*
 	 * Post request to queue:
@@ -138,7 +134,7 @@ v8plus_method_call(void *cop, const char *name, const nvlist_t *lp)
 	uv_async_send(&_v8plus_uv_async);
 
 	/*
-	 * Wait for our request to be serviced on the Event Loop thread:
+	 * Wait for our request to be serviced on the event loop thread:
 	 */
 	if (pthread_mutex_lock(&vac.vac_mtx) != 0)
 		v8plus_panic("could not lock async call mutex");
@@ -146,6 +142,8 @@ v8plus_method_call(void *cop, const char *name, const nvlist_t *lp)
 		if (pthread_cond_wait(&vac.vac_cv, &vac.vac_mtx) != 0)
 			v8plus_panic("could not wait on async call condvar");
 	}
+	if (pthread_mutex_unlock(&vac.vac_mtx) != 0)
+		v8plus_panic("could not unlock async call mutex");
 
 	return (vac.vac_return);
 }
@@ -154,7 +152,7 @@ v8plus_method_call(void *cop, const char *name, const nvlist_t *lp)
 /*
  * Initialise structures for off-event-loop method calls.
  *
- * Note that uv_async_init() must be called inside the libuv Event Loop, so we
+ * Note that uv_async_init() must be called inside the libuv event loop, so we
  * do it here.  We also want to record the thread ID of the Event Loop thread
  * so as to determine what kind of method calls to make later.
  */
