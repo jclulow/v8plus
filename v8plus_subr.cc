@@ -29,7 +29,6 @@ static std::unordered_map<uint64_t, cb_hdl_t> cbhash;
 static uint64_t cbnext;
 static void (*__real_nvlist_free)(nvlist_t *);
 
-
 static const char *
 cstr(const v8::String::Utf8Value &v)
 {
@@ -463,7 +462,7 @@ v8plus_method_call_direct(void *cop, const char *name, const nvlist_t *lp)
 	v8::Handle<v8::Value> res;
 	nvlist_t *rp;
 
-	if (v8plus::ObjectWrap::in_event_thread() != _B_TRUE)
+	if (v8plus_in_event_thread() != _B_TRUE)
 		v8plus_panic("direct method call outside of event loop");
 
 	argc = max_argc;
@@ -487,77 +486,6 @@ v8plus_method_call_direct(void *cop, const char *name, const nvlist_t *lp)
 	}
 
 	return (rp);
-}
-
-extern "C" void
-v8plus_async_callback(uv_async_t *async, __attribute__((unused)) int status)
-{
-	if (v8plus::ObjectWrap::in_event_thread() != _B_TRUE)
-		v8plus_panic("async callback called outside of event loop");
-
-	for (;;) {
-		v8plus_async_call_t *ac;
-
-		if ((ac = v8plus::ObjectWrap::next_async_call()) == NULL)
-			break;
-
-		if (pthread_mutex_lock(&ac->ac_mtx) != 0)
-			v8plus_panic("could not lock async call mutex");
-
-		if (ac->ac_run == _B_TRUE)
-			v8plus_panic("async call already run");
-
-		ac->ac_return = v8plus_method_call_direct(ac->ac_cop,
-		    ac->ac_name, ac->ac_lp);
-		ac->ac_run = _B_TRUE;
-
-		if (pthread_cond_broadcast(&ac->ac_cv) != 0)
-			v8plus_panic("could not signal async call condvar");
-		if (pthread_mutex_unlock(&ac->ac_mtx) != 0)
-			v8plus_panic("could not unlock async call mutex");
-	}
-}
-
-extern "C" nvlist_t *
-v8plus_method_call(void *cop, const char *name, const nvlist_t *lp)
-{
-	v8plus_async_call_t ac;
-
-	if (v8plus::ObjectWrap::in_event_thread() == _B_TRUE) {
-		/*
-		 * We're running in the event loop thread, so we can make the
-		 * call directly.
-		 */
-		return (v8plus_method_call_direct(cop, name, lp));
-	}
-
-	/*
-	 * As we cannot manipulate v8plus/V8/Node structures directly from
-	 * outside the event loop thread, we push the call arguments onto a
-	 * queue and post to the event loop thread.  We then sleep on our
-	 * condition variable until the event loop thread makes the call
-	 * for us and wakes us up.
-	 */
-	ac.ac_cop = cop;
-	ac.ac_name = name;
-	ac.ac_lp = lp;
-	if (pthread_mutex_init(&ac.ac_mtx, NULL) != 0)
-		v8plus_panic("could not init async call mutex");
-	if (pthread_cond_init(&ac.ac_cv, NULL) != 0)
-		v8plus_panic("could not init async call condvar");
-	ac.ac_run = _B_FALSE;
-	ac.ac_return = NULL;
-
-	v8plus::ObjectWrap::post_async_call(&ac);
-
-	if (pthread_mutex_lock(&ac.ac_mtx) != 0)
-		v8plus_panic("could not lock async call mutex");
-	while (ac.ac_run == _B_FALSE) {
-		if (pthread_cond_wait(&ac.ac_cv, &ac.ac_mtx) != 0)
-			v8plus_panic("could not wait on async call condvar");
-	}
-
-	return (ac.ac_return);
 }
 
 extern "C" int
