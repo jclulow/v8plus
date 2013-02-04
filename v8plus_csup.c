@@ -145,6 +145,11 @@ v8plus_method_call(void *cop, const char *name, const nvlist_t *lp)
 	if (pthread_mutex_unlock(&vac.vac_mtx) != 0)
 		v8plus_panic("could not unlock async call mutex");
 
+	if (pthread_cond_destroy(&vac.vac_cv) != 0)
+		v8plus_panic("could not destroy async call condvar");
+	if (pthread_mutex_destroy(&vac.vac_mtx) != 0)
+		v8plus_panic("could not destroy async call mutex");
+
 	return (vac.vac_return);
 }
 
